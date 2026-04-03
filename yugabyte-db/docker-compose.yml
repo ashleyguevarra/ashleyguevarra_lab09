@@ -5,7 +5,8 @@ services:
     command: >
       bash -c "/home/yugabyte/bin/yugabyted start --advertise_address=yugabyte1 --tserver_flags=ysql_enable_auth=false --daemon=false --base_dir=/home/yugabyte/var"
     ports:
-      - "7000:7000"   # yb-master UI
+      # Host 17000 if 7000 is already in use (e.g. another app). UI: http://localhost:17000
+      - "17000:7000"   # yb-master UI (container still listens on 7000)
       - "9000:9000"   # yb-tserver UI
       - "5433:5433"   # YSQL
       - "9042:9042"   # YCQL
@@ -13,36 +14,37 @@ services:
       - yugabyte_data1:/home/yugabyte/var
     networks:
       - labo09-network
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://yugabyte1:7000/api/v1/masters | grep -q 'LEADER' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 60s
+    # Pas de healthcheck : sur Docker Desktop il reste souvent "unhealthy" alors que YSQL
+    # fonctionne, ce qui bloquait yugabyte2/3 (depends_on: healthy). db-init attend YSQL
+    # dans entrypoint.sh ; y2/y3 attendent l’UI master ci-dessous avant --join.
 
   yugabyte2:
+    profiles: ["cluster"]
     image: yugabytedb/yugabyte:latest
     container_name: yugabyte2
     command: >
-      bash -c "/home/yugabyte/bin/yugabyted start --advertise_address=yugabyte2 --join=yugabyte1 --daemon=false --base_dir=/home/yugabyte/var"
+      bash -c "until curl -sf http://yugabyte1:7000/ >/dev/null 2>&1; do sleep 3; done;
+      /home/yugabyte/bin/yugabyted start --advertise_address=yugabyte2 --join=yugabyte1 --daemon=false --base_dir=/home/yugabyte/var"
     volumes:
       - yugabyte_data2:/home/yugabyte/var
     depends_on:
       yugabyte1:
-        condition: service_healthy
+        condition: service_started
     networks:
       - labo09-network
 
   yugabyte3:
+    profiles: ["cluster"]
     image: yugabytedb/yugabyte:latest
     container_name: yugabyte3
     command: >
-      bash -c "/home/yugabyte/bin/yugabyted start --advertise_address=yugabyte3 --join=yugabyte1 --daemon=false --base_dir=/home/yugabyte/var"
+      bash -c "until curl -sf http://yugabyte1:7000/ >/dev/null 2>&1; do sleep 3; done;
+      /home/yugabyte/bin/yugabyted start --advertise_address=yugabyte3 --join=yugabyte1 --daemon=false --base_dir=/home/yugabyte/var"
     volumes:
       - yugabyte_data3:/home/yugabyte/var
     depends_on:
       yugabyte1:
-        condition: service_healthy
+        condition: service_started
     networks:
       - labo09-network
 
@@ -54,7 +56,7 @@ services:
     entrypoint: ["bash", "/db-init/entrypoint.sh"]
     depends_on:
       yugabyte1:
-        condition: service_healthy
+        condition: service_started
     networks:
       - labo09-network
 
@@ -64,12 +66,11 @@ services:
     environment:
       - PYTHONPATH=/app/src
     depends_on:
-      yugabyte1:
-        condition: service_healthy
       db-init:
         condition: service_completed_successfully
     ports:
-      - "5000:5000"
+      # Host 5001: macOS often reserves 5000 (AirPlay). API: http://localhost:5001
+      - "5001:5000"
     env_file:
       - .env
     networks:

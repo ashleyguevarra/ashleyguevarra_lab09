@@ -1,0 +1,49 @@
+# Exécute concurrency_test.py contre la stack YugabyteDB avant tout déploiement (Labo 09).
+name: Concurrency test (YugabyteDB)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  concurrency-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare .env
+        run: cp yugabyte-db/.env.example yugabyte-db/.env
+
+      - name: Start YugabyteDB stack
+        working-directory: yugabyte-db
+        run: docker compose up -d --build
+
+      - name: Wait for API
+        run: |
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:5001/health >/dev/null; then
+              echo "API is up"
+              exit 0
+            fi
+            echo "Waiting for API... ($i/90)"
+            sleep 10
+          done
+          echo "Timeout waiting for API"
+          docker compose -f yugabyte-db/docker-compose.yml ps
+          docker compose -f yugabyte-db/docker-compose.yml logs --tail=80 python-app || true
+          exit 1
+
+      - name: Run concurrency test
+        working-directory: yugabyte-db
+        run: |
+          docker compose exec -T python-app \
+            python tests/concurrency_test.py --host http://127.0.0.1:5000 --threads 5 --product 3
+
+      - name: Show container status on failure
+        if: failure()
+        run: docker compose -f yugabyte-db/docker-compose.yml ps && docker compose -f yugabyte-db/docker-compose.yml logs --tail=120
